@@ -181,7 +181,23 @@ Every account and user record carries a `sync_state`:
 
 On any failure the hook sets `last_sync_error` and returns nil to the caller — the PB save still succeeds and the record is left in `pending_*` state. Re-saving the record retries the Synadia call.
 
-In v0.2, `Reconcile(app, ctx)` will scan all `pending_*` records and retry without requiring a manual save — wire it to `app.Cron()` for periodic reconciliation.
+### Periodic reconciliation
+
+`Reconcile(app, opts, ctx)` scans accounts and users in `pending_*` states and re-runs the same push that the hook would. Records that succeed transition to `synced`; records that still fail are left in `pending_*` for the next pass. Accounts are processed before users so a user whose account just got its `synadia_account_id` resolved on this pass can succeed on the same pass.
+
+Wire it to `app.Cron()` at whatever cadence suits the deployment:
+
+```go
+app.Cron().MustAdd("pb-synadia-reconcile", "*/5 * * * *", func() {
+    if err := pbsynadia.Reconcile(app, opts, context.Background()); err != nil {
+        log.Printf("reconcile: %v", err)
+    }
+})
+```
+
+Reconcile is safe to call concurrently — overlapping invocations skip with a log line rather than running in parallel. Per-record push failures are swallowed and logged; only setup-level failures are returned. Set `Options.SynadiaCallDelay` to throttle between records if you have many pending rows.
+
+What Reconcile in v0.2.1 does **not** yet do: drift detection (does the PB-known `synadia_*_id` still exist on Synadia?), orphan adoption (a Synadia resource that PB doesn't know about — stitching by `name` / `nats_username`), or role-update cascade. Those are subsequent slices.
 
 ## Limit Semantics — Heads Up
 
@@ -253,17 +269,17 @@ The conceptual surface (accounts/users/roles/creds_file) is the same — the con
 
 ## Roadmap
 
-- **v0.2** — `Reconcile(app, ctx)` exported function (wire to `app.Cron()`). Role-update cascade. Pending-state retries via Reconcile. `Options.SynadiaCallDelay` honored on cascades.
+- **v0.2** — `Reconcile(app, opts, ctx)` shipped (wire to `app.Cron()`); pending-state retries and `Options.SynadiaCallDelay` honored. Still to come: drift detection (PB-known ids that no longer exist on Synadia), orphan adoption (Synadia resources unknown to PB, stitched by `name` / `nats_username`), and role-update cascade.
 - **v0.3** — `nats_account_exports` / `nats_account_imports` collections, once Synadia SDK surface for cross-account sharing is verified.
 - **v0.4 (speculative)** — Opt-in `Options.RoleStrategy = StrategyScopedGroups` mode that maps roles to Synadia signing key groups. Documented constraints (no per-user overrides on scoped users; role changes destroy creds). Only ships once group-update cascade behavior is verified by integration test.
 
 ## Troubleshooting
 
-**`pending_create` rows piling up.** Synadia is unreachable or the API token is invalid. Check `last_sync_error` on the records. Once Synadia is reachable, re-save the records (or wait for v0.2's Reconcile).
+**`pending_create` rows piling up.** Synadia is unreachable or the API token is invalid. Check `last_sync_error` on the records. Once Synadia is reachable, the next `Reconcile` pass picks them up automatically — or re-save individual records to retry inline.
 
-**User created in PB but no creds_file.** Synadia user creation succeeded but `DownloadNatsUserCreds` failed. The record is in `pending_update`. Set `regenerate: true` to rotate the keys and fetch fresh creds (safe here — no creds were ever in circulation), or wait for v0.2's Reconcile to retry the download non-destructively.
+**User created in PB but no creds_file.** Synadia user creation succeeded but `DownloadNatsUserCreds` failed. The record is in `pending_update`. The next `Reconcile` pass will retry the push (which downloads creds again on success). If you can't wait, set `regenerate: true` to rotate the keys and fetch fresh creds — safe here since no creds were ever in circulation.
 
-**Account exists in Synadia but PB doesn't know its id.** Either created outside pb-synadia, or a `pending_create` retry succeeded but the second PB save failed. v0.2's Reconcile stitches by name (`nats_username` for users, `name` for accounts).
+**Account exists in Synadia but PB doesn't know its id.** Either created outside pb-synadia, or a `pending_create` retry succeeded but the second PB save failed. Orphan stitching by name (`nats_username` for users, `name` for accounts) is on the v0.2 roadmap but not yet implemented — for now, copy the `synadia_account_id` onto the PB record manually.
 
 **Permission changes on a role aren't reflected.** Expected in v0.1 — role cascade is v0.2. Re-save each affected user record to push their merged permissions.
 
