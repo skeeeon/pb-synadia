@@ -72,6 +72,9 @@ These only become obvious after reading several files together — observe them:
 - **Role updates do NOT cascade in v0.1.** [internal/hooks/roles.go](internal/hooks/roles.go) only logs a warning. Cascade is a deliberate v0.2 milestone alongside `Reconcile` — don't add a partial implementation; the milestone boundary matters.
 - **Collections are created with `nil` API rules** by default. The consuming app must grant access explicitly. Don't change the defaults in [internal/collections/manager.go](internal/collections/manager.go).
 - **`regenerate: true` on a user is destructive and one-shot.** The update hook calls `NatsUserAPI.RotateNatsUser` (via `rotateUserKeys` in [internal/hooks/users.go](internal/hooks/users.go)) to rotate the user's nkey + seed, then downloads fresh creds. Any previously distributed `.creds` file stops working immediately. The flag auto-resets to `false`. Do not change this back to a plain re-download — the field name promises rotation.
+- **Subject exports/imports are top-level Synadia resources**, NOT embedded in the account JWT (this differs from pb-nats). An export/import hook calls `client.CreateSubjectExport(synadia_account_id, ...)` / `CreateSubjectImport(...)` and caches the returned id on the PB record. The parent account record is never mutated. When working on exports/imports, do not assume an account JWT regeneration is needed.
+- **Three PB fields on exports/imports have no Synadia equivalent and are intentionally not transmitted:** `nats_account_exports.allow_trace`, `nats_account_imports.allow_trace`, and `nats_account_imports.description`. Kept on the PB schema for pb-nats parity. Don't waste time trying to wire them through the SDK — `syncp.Export` has no `AllowTrace`, and `syncp.Import` has neither field. Revisit when the Synadia API surface adds them.
+- **Pending-account cascade for exports/imports**: when an export/import is saved with its parent account still in `pending_*`, `resolveSynadiaAccountID` returns an error and the record lands in `pending_create`. Reconcile order (accounts → users → exports → imports) means one pass can heal the chain once Synadia is reachable.
 
 ## Roadmap pointers
 
@@ -79,7 +82,8 @@ If asked to implement work that touches:
 - **`pending_*` retry** → shipped in v0.2.1 via `Reconcile`; extending or rewriting it lands in [internal/hooks/reconcile.go](internal/hooks/reconcile.go)
 - **drift detection** (PB-known `synadia_*_id` no longer on Synadia) or **orphan adoption** (Synadia resource unknown to PB, stitched by `name` / `nats_username`) → v0.2 milestone, not yet started; see README "Roadmap"
 - **role-update cascade to all users in a role** → v0.2 milestone; the easy path once retry exists is to mark affected users as `pending_update` in the role hook and let the next Reconcile pass push them
-- **cross-account exports/imports** → v0.3 (collections deferred until SDK surface is verified)
+- **cross-account subject exports/imports** → shipped in v0.3 (see [internal/hooks/subject_exports.go](internal/hooks/subject_exports.go), [internal/hooks/subject_imports.go](internal/hooks/subject_imports.go))
+- **JetStream stream exports/imports** (Synadia's separate `StreamExportAPI` / `StreamImportAPI`) → v0.4+ candidate; pb-nats has no equivalent
 - **scoped-group role strategy** → v0.4 speculative; ships only after group-update cascade behavior is verified by integration test
 
 ## Critical files for any non-trivial change
@@ -90,6 +94,8 @@ If asked to implement work that touches:
 - [internal/types/types.go](internal/types/types.go) — record structs, sync-state and event-type constants
 - [internal/hooks/common.go](internal/hooks/common.go) — `Deps`, `markPending`, `markSynced`, `shouldHandle`
 - [internal/hooks/accounts.go](internal/hooks/accounts.go), [internal/hooks/users.go](internal/hooks/users.go), [internal/hooks/roles.go](internal/hooks/roles.go) — the hook bindings themselves
+- [internal/hooks/subject_exports.go](internal/hooks/subject_exports.go), [internal/hooks/subject_imports.go](internal/hooks/subject_imports.go) — cross-account export/import hooks (v0.3)
+- [internal/synadia/subject_exports.go](internal/synadia/subject_exports.go), [internal/synadia/subject_imports.go](internal/synadia/subject_imports.go) — SDK wrappers for `SubjectExportAPI` / `SubjectImportAPI`
 - [internal/hooks/reconcile.go](internal/hooks/reconcile.go), [reconcile.go](reconcile.go) — periodic retry loop for `pending_*` records
 - [internal/synadia/client.go](internal/synadia/client.go) — SDK chokepoint
 - [internal/permissions/merger.go](internal/permissions/merger.go) — merge algorithm

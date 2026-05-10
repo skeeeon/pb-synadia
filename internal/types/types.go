@@ -104,6 +104,54 @@ type RoleRecord struct {
 	Updated time.Time `json:"updated"`
 }
 
+// SubjectExportRecord mirrors a row in nats_account_exports. The user-facing
+// fields match pb-nats's schema 1:1 for cross-library parity; the trailing
+// trio (SynadiaExportID, SyncState, LastSyncError) is the pb-synadia mirror
+// convention.
+//
+// AllowTrace is PB-side-only — syncp.Export has no AllowTrace field, so the
+// value is accepted on the record but not transmitted to Synadia. Kept for
+// pb-nats parity; revisit if Synadia adds support.
+type SubjectExportRecord struct {
+	ID                   string `json:"id"`
+	AccountID            string `json:"account_id"`
+	Name                 string `json:"name"`
+	Subject              string `json:"subject"`
+	Type                 string `json:"type"` // "stream" or "service"
+	TokenReq             bool   `json:"token_req"`
+	ResponseType         string `json:"response_type"`         // service only: Singleton | Stream | Chunked
+	ResponseThreshold    int64  `json:"response_threshold"`    // ms, service only
+	AccountTokenPosition int64  `json:"account_token_position"`
+	Advertise            bool   `json:"advertise"`
+	AllowTrace           bool   `json:"allow_trace"` // PB-side-only
+	Description          string `json:"description"`
+	SynadiaExportID      string `json:"synadia_export_id"`
+	SyncState            string `json:"sync_state"`
+	LastSyncError        string `json:"last_sync_error"`
+}
+
+// SubjectImportRecord mirrors a row in nats_account_imports. Fields match
+// pb-nats's schema 1:1; the trailing trio is pb-synadia's mirror convention.
+//
+// AllowTrace and Description are PB-side-only — syncp.Import exposes neither.
+// Kept for pb-nats parity; revisit if Synadia adds support.
+type SubjectImportRecord struct {
+	ID              string `json:"id"`
+	AccountID       string `json:"account_id"`
+	Name            string `json:"name"`
+	Subject         string `json:"subject"`
+	Type            string `json:"type"` // "stream" or "service"
+	Account         string `json:"account"` // exporting account's public NKey
+	Token           string `json:"token"`
+	LocalSubject    string `json:"local_subject"`
+	Share           bool   `json:"share"`
+	AllowTrace      bool   `json:"allow_trace"` // PB-side-only
+	Description     string `json:"description"` // PB-side-only
+	SynadiaImportID string `json:"synadia_import_id"`
+	SyncState       string `json:"sync_state"`
+	LastSyncError   string `json:"last_sync_error"`
+}
+
 // MergedPermissions is the result of merging a role with a user's overrides.
 // It is the structure pushed to Synadia as inline (unscoped) user permissions.
 type MergedPermissions struct {
@@ -153,6 +201,13 @@ const (
 	EventTypeRoleCreate    = "role_create"
 	EventTypeRoleUpdate    = "role_update"
 	EventTypeRoleDelete    = "role_delete"
+
+	EventTypeSubjectExportCreate = "subject_export_create"
+	EventTypeSubjectExportUpdate = "subject_export_update"
+	EventTypeSubjectExportDelete = "subject_export_delete"
+	EventTypeSubjectImportCreate = "subject_import_create"
+	EventTypeSubjectImportUpdate = "subject_import_update"
+	EventTypeSubjectImportDelete = "subject_import_delete"
 )
 
 // Default permission arrays applied when both role and user permission lists are empty.

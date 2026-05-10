@@ -29,6 +29,8 @@ type (
 	AccountRecord       = pbtypes.AccountRecord
 	NatsUserRecord      = pbtypes.NatsUserRecord
 	RoleRecord          = pbtypes.RoleRecord
+	SubjectExportRecord = pbtypes.SubjectExportRecord
+	SubjectImportRecord = pbtypes.SubjectImportRecord
 	MergedPermissions   = pbtypes.MergedPermissions
 )
 
@@ -52,7 +54,7 @@ var (
 )
 
 // Version is the library version.
-const Version = "0.1.0"
+const Version = "0.3.0"
 
 // Setup initializes Synadia Cloud sync for a PocketBase instance.
 //
@@ -109,6 +111,8 @@ func initializeComponents(app *pocketbase.PocketBase, options Options, logger *u
 	hooks.SetupAccountHooks(app, deps)
 	hooks.SetupUserHooks(app, deps)
 	hooks.SetupRoleHooks(app, deps)
+	hooks.SetupSubjectExportHooks(app, deps)
+	hooks.SetupSubjectImportHooks(app, deps)
 	logger.Success("   Hooks registered")
 
 	return nil

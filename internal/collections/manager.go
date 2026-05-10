@@ -35,6 +35,12 @@ func (cm *Manager) InitializeCollections() error {
 	if err := cm.createUsersCollection(); err != nil {
 		return fmt.Errorf("users: %w", err)
 	}
+	if err := cm.createExportsCollection(); err != nil {
+		return fmt.Errorf("exports: %w", err)
+	}
+	if err := cm.createImportsCollection(); err != nil {
+		return fmt.Errorf("imports: %w", err)
+	}
 	return nil
 }
 
@@ -183,6 +189,125 @@ func (cm *Manager) createUsersCollection() error {
 		},
 	})
 	c.Fields.Add(&core.TextField{Name: "last_sync_error", Max: 1000})
+
+	return cm.app.Save(c)
+}
+
+func (cm *Manager) createExportsCollection() error {
+	if _, err := cm.app.FindCollectionByNameOrId(cm.options.ExportCollectionName); err == nil {
+		return nil
+	}
+
+	c := core.NewBaseCollection(cm.options.ExportCollectionName)
+	c.ListRule = nil
+	c.ViewRule = nil
+	c.CreateRule = nil
+	c.UpdateRule = nil
+	c.DeleteRule = nil
+
+	// Save once with no relations so we can look up the accounts collection id.
+	if err := cm.app.Save(c); err != nil {
+		return fmt.Errorf("save exports (initial): %w", err)
+	}
+
+	accounts, err := cm.app.FindCollectionByNameOrId(cm.options.AccountCollectionName)
+	if err != nil {
+		return fmt.Errorf("accounts collection lookup: %w", err)
+	}
+
+	c.Fields.Add(&core.RelationField{
+		Name: "account_id", Required: true, MaxSelect: 1,
+		CollectionId: accounts.Id, CascadeDelete: true,
+	})
+	c.Fields.Add(&core.TextField{Name: "name", Required: true, Max: 100})
+	c.Fields.Add(&core.TextField{Name: "subject", Required: true, Max: 500})
+	c.Fields.Add(&core.SelectField{
+		Name: "type", Required: true, MaxSelect: 1,
+		Values: []string{"stream", "service"},
+	})
+	c.Fields.Add(&core.BoolField{Name: "token_req"})
+	c.Fields.Add(&core.SelectField{
+		Name: "response_type", MaxSelect: 1,
+		Values: []string{"Singleton", "Stream", "Chunked"},
+	})
+	c.Fields.Add(&core.NumberField{Name: "response_threshold", OnlyInt: true, Min: pbcore.Pointer(0.0)})
+	c.Fields.Add(&core.NumberField{Name: "account_token_position", OnlyInt: true, Min: pbcore.Pointer(0.0)})
+	c.Fields.Add(&core.BoolField{Name: "advertise"})
+	c.Fields.Add(&core.BoolField{Name: "allow_trace"})
+	c.Fields.Add(&core.TextField{Name: "description", Max: 500})
+
+	c.Fields.Add(&core.TextField{Name: "synadia_export_id", Max: 100})
+	c.Fields.Add(&core.SelectField{
+		Name:      "sync_state",
+		MaxSelect: 1,
+		Values: []string{
+			pbtypes.SyncStateSynced,
+			pbtypes.SyncStateCreating,
+			pbtypes.SyncStatePendingCreate,
+			pbtypes.SyncStatePendingUpdate,
+		},
+	})
+	c.Fields.Add(&core.TextField{Name: "last_sync_error", Max: 1000})
+
+	c.Fields.Add(&core.AutodateField{Name: "created", OnCreate: true})
+	c.Fields.Add(&core.AutodateField{Name: "updated", OnCreate: true, OnUpdate: true})
+
+	return cm.app.Save(c)
+}
+
+func (cm *Manager) createImportsCollection() error {
+	if _, err := cm.app.FindCollectionByNameOrId(cm.options.ImportCollectionName); err == nil {
+		return nil
+	}
+
+	c := core.NewBaseCollection(cm.options.ImportCollectionName)
+	c.ListRule = nil
+	c.ViewRule = nil
+	c.CreateRule = nil
+	c.UpdateRule = nil
+	c.DeleteRule = nil
+
+	if err := cm.app.Save(c); err != nil {
+		return fmt.Errorf("save imports (initial): %w", err)
+	}
+
+	accounts, err := cm.app.FindCollectionByNameOrId(cm.options.AccountCollectionName)
+	if err != nil {
+		return fmt.Errorf("accounts collection lookup: %w", err)
+	}
+
+	c.Fields.Add(&core.RelationField{
+		Name: "account_id", Required: true, MaxSelect: 1,
+		CollectionId: accounts.Id, CascadeDelete: true,
+	})
+	c.Fields.Add(&core.TextField{Name: "name", Required: true, Max: 100})
+	c.Fields.Add(&core.TextField{Name: "subject", Required: true, Max: 500})
+	c.Fields.Add(&core.TextField{Name: "account", Required: true, Max: 200})
+	c.Fields.Add(&core.TextField{Name: "token", Max: 10000})
+	c.Fields.Add(&core.TextField{Name: "local_subject", Max: 500})
+	c.Fields.Add(&core.SelectField{
+		Name: "type", Required: true, MaxSelect: 1,
+		Values: []string{"stream", "service"},
+	})
+	c.Fields.Add(&core.BoolField{Name: "share"})
+	c.Fields.Add(&core.BoolField{Name: "allow_trace"})
+	c.Fields.Add(&core.TextField{Name: "description", Max: 500})
+
+	c.Fields.Add(&core.TextField{Name: "synadia_import_id", Max: 100})
+	c.Fields.Add(&core.SelectField{
+		Name:      "sync_state",
+		MaxSelect: 1,
+		Values: []string{
+			pbtypes.SyncStateSynced,
+			pbtypes.SyncStateCreating,
+			pbtypes.SyncStatePendingCreate,
+			pbtypes.SyncStatePendingUpdate,
+		},
+	})
+	c.Fields.Add(&core.TextField{Name: "last_sync_error", Max: 1000})
+
+	c.Fields.Add(&core.AutodateField{Name: "created", OnCreate: true})
+	c.Fields.Add(&core.AutodateField{Name: "updated", OnCreate: true, OnUpdate: true})
 
 	return cm.app.Save(c)
 }

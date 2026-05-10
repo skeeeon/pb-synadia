@@ -8,12 +8,12 @@ Sister library to [pb-nats](https://github.com/skeeeon/pb-nats), which manages a
 
 ## Status
 
-**v0.1** — first shippable version. Accounts, users, and roles work end-to-end against Synadia Cloud.
+**v0.3** — accounts, users, roles, and cross-account subject exports/imports work end-to-end against Synadia Cloud. `Reconcile(app, opts, ctx)` retries `pending_*` records on a cron.
 
-What v0.1 does **not** do (yet):
-- No `Reconcile()` to recover from drift or retry pending records (v0.2).
-- No role-update cascade — changing a role's permissions does not push to Synadia for users in that role until those user records are individually written (v0.2).
-- No cross-account imports/exports collections (v0.3).
+Still to come:
+- Drift detection (PB-known `synadia_*_id` no longer on Synadia) and orphan adoption (Synadia resource unknown to PB, stitched by `name` / `nats_username`) — still v0.2 milestone.
+- Role-update cascade — changing a role's permissions does not push to Synadia for users in that role until those user records are individually written (v0.2).
+- JetStream stream sharing via Synadia's separate `StreamExportAPI` / `StreamImportAPI` (v0.4+).
 - No CLI commands.
 
 See [Roadmap](#roadmap).
@@ -90,7 +90,7 @@ No queue, no debouncer, no operator keys, no JWT generation, no NATS connection.
 
 ## Collections
 
-Three collections in v0.1. All have `nil` API rules — set them in your app:
+Five collections (accounts, roles, users, subject exports, subject imports). All have `nil` API rules — set them in your app:
 
 ```go
 accounts, _ := app.FindCollectionByNameOrId("nats_accounts")
@@ -141,6 +141,45 @@ PB-side permission template. Synadia never sees it; pb-synadia merges role + use
 | `publish_permissions` / `subscribe_permissions` / deny variants | JSON | per-user overrides, merged with role |
 | `sync_state`, `last_sync_error` | Select / Text | |
 
+### `nats_account_exports`
+
+Declares a subject the owning account exposes to other accounts. Each row maps to one Synadia subject export (top-level resource on Synadia, *not* embedded in the account JWT — that's the v0.1 pb-nats model). Type values match pb-nats: `stream` for one-way data flow, `service` for request-reply.
+
+| Field | Type | Notes |
+|---|---|---|
+| `account_id` | Relation | owning account; cascade delete |
+| `name` | Text | export name |
+| `subject` | Text | NATS subject pattern (wildcards OK) |
+| `type` | Select | `stream` or `service` |
+| `token_req` | Bool | require activation token for import |
+| `response_type` | Select | `Singleton` / `Stream` / `Chunked` — service only |
+| `response_threshold` | Number | response timeout, ms — service only |
+| `account_token_position` | Number | position of account token in wildcard subject |
+| `advertise` | Bool | advertise this export |
+| `allow_trace` | Bool | **PB-side only** — `syncp.Export` has no AllowTrace field; kept for pb-nats parity |
+| `description` | Text | |
+| `synadia_export_id` | Text | populated after create |
+| `sync_state`, `last_sync_error` | Select / Text | |
+
+### `nats_account_imports`
+
+Consumes a subject another account exports. The exporting account is referenced by its **public NKey** in the `account` field, not by relation — the exporter may live in a different deployment.
+
+| Field | Type | Notes |
+|---|---|---|
+| `account_id` | Relation | importing account; cascade delete |
+| `name` | Text | import name |
+| `subject` | Text | subject being imported (publisher-perspective) |
+| `account` | Text | exporting account's public NKey |
+| `token` | Text | activation JWT — required when the export has `token_req` |
+| `local_subject` | Text | local subject remapping (supports `$1`, `$2` wildcards) |
+| `type` | Select | `stream` or `service` |
+| `share` | Bool | enable latency tracking — service only |
+| `allow_trace` | Bool | **PB-side only** — `syncp.Import` has no AllowTrace field |
+| `description` | Text | **PB-side only** — `syncp.Import` has no Description field |
+| `synadia_import_id` | Text | populated after create |
+| `sync_state`, `last_sync_error` | Select / Text | |
+
 ## Permissions
 
 Permissions are pushed to Synadia as **inline (unscoped) user permissions**, computed on every user write as the union of role + per-user override:
@@ -167,6 +206,39 @@ Inline merge gives one mode, no cliff edges, and the same per-user override patt
 ### Why a default signing key group
 
 Synadia requires every NATS user to be assigned to a signing key group at create time. For inline-permission users we still need *some* group. pb-synadia auto-creates one named `pb-synadia-default` per account on first account create (with `Programmatic: true` so reconcile can distinguish library-managed groups), and caches its id on the account record.
+
+## Cross-Account Exports and Imports
+
+NATS accounts are isolated by default. Exports declare a subject one account makes available; imports consume a subject another account has exported. The user-facing surface matches pb-nats (`type: "stream" | "service"`, same field set on each row) so apps targeting both backends can share their consuming code.
+
+**Stream export → import** (one-way data):
+
+```http
+POST /api/collections/nats_account_exports/records
+{ "account_id": "ACCT_A_ID", "name": "sensors", "subject": "sensors.>", "type": "stream" }
+
+POST /api/collections/nats_account_imports/records
+{ "account_id": "ACCT_B_ID", "name": "sensors", "subject": "sensors.>",
+  "account": "ABCD...ACCT_A_PUBLIC_KEY", "type": "stream" }
+```
+
+**Service export → import** (request-reply):
+
+```http
+POST /api/collections/nats_account_exports/records
+{ "account_id": "ACCT_A_ID", "name": "echo", "subject": "echo.req",
+  "type": "service", "response_type": "Singleton" }
+
+POST /api/collections/nats_account_imports/records
+{ "account_id": "ACCT_B_ID", "name": "echo", "subject": "echo.req",
+  "account": "ABCD...ACCT_A_PUBLIC_KEY", "type": "service" }
+```
+
+**Token-required exports.** Set `token_req: true` on the export. Importing accounts must obtain an activation JWT (from the exporting side) and put it on the import's `token` field. pb-synadia does not generate activation tokens — that's the responsibility of the exporting account's operator (today, via the Synadia console).
+
+**Architectural note vs pb-nats.** pb-nats embeds exports and imports inside the account JWT and republishes the parent account whenever an export or import changes. Synadia treats them as **top-level resources** with their own ids — pb-synadia's hooks therefore call `CreateSubjectExport(synadia_account_id, ...)` / `CreateSubjectImport(...)` and cache an `synadia_export_id` / `synadia_import_id` on the PB record. The account record is never mutated by an export/import write.
+
+**Pending-account cascade.** An export or import whose owning account is still in `pending_create` cannot succeed yet — its hook marks it `pending_create` with a descriptive `last_sync_error`. The next `Reconcile` pass picks them up in order (accounts → users → exports → imports) so a single pass can heal a chain.
 
 ## Sync States and Retry
 
@@ -270,7 +342,7 @@ The conceptual surface (accounts/users/roles/creds_file) is the same — the con
 ## Roadmap
 
 - **v0.2** — `Reconcile(app, opts, ctx)` shipped (wire to `app.Cron()`); pending-state retries and `Options.SynadiaCallDelay` honored. Still to come: drift detection (PB-known ids that no longer exist on Synadia), orphan adoption (Synadia resources unknown to PB, stitched by `name` / `nats_username`), and role-update cascade.
-- **v0.3** — `nats_account_exports` / `nats_account_imports` collections, once Synadia SDK surface for cross-account sharing is verified.
+- **v0.3** — `nats_account_exports` / `nats_account_imports` shipped (subject-based, matching pb-nats's `type: "stream" | "service"` model). Still to come: JetStream stream sharing via Synadia's separate `StreamExportAPI` / `StreamImportAPI`.
 - **v0.4 (speculative)** — Opt-in `Options.RoleStrategy = StrategyScopedGroups` mode that maps roles to Synadia signing key groups. Documented constraints (no per-user overrides on scoped users; role changes destroy creds). Only ships once group-update cascade behavior is verified by integration test.
 
 ## Troubleshooting
