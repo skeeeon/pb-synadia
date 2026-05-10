@@ -86,6 +86,21 @@ func (c *Client) DownloadCreds(synadiaUserID string) (string, error) {
 	return creds, nil
 }
 
+// RotateUser rotates a Synadia user's nkey and seed, returning the new
+// public key and JWT. Any creds file previously downloaded for the user
+// is invalidated by this call — callers must download fresh creds after.
+func (c *Client) RotateUser(synadiaUserID string) (UserResult, error) {
+	resp, _, err := c.api.NatsUserAPI.RotateNatsUser(c.ctx, synadiaUserID).Execute()
+	if err != nil {
+		return UserResult{}, fmt.Errorf("rotate user %q: %w", synadiaUserID, err)
+	}
+	return UserResult{
+		ID:        resp.Id,
+		PublicKey: resp.UserPublicKey,
+		JWT:       resp.Jwt,
+	}, nil
+}
+
 // ListUsers returns all NATS users for an account. Used by Reconcile.
 func (c *Client) ListUsers(synadiaAccountID string) ([]syncp.NatsUserViewResponse, error) {
 	resp, _, err := c.api.AccountAPI.ListUsers(c.ctx, synadiaAccountID).Execute()

@@ -39,8 +39,8 @@ func SetupUserHooks(app *pocketbase.PocketBase, deps *Deps) {
 		}
 		if e.Record.GetBool("regenerate") {
 			e.Record.Set("regenerate", false)
-			if err := refreshUserCreds(deps, e.Record); err != nil {
-				deps.Logger.Warning("user creds refresh failed for %s: %v", e.Record.Id, err)
+			if err := rotateUserKeys(deps, e.Record); err != nil {
+				deps.Logger.Warning("user key rotation failed for %s: %v", e.Record.Id, err)
 			}
 		}
 		if !userSynadiaFieldsChanged(e.Record) {
@@ -153,13 +153,28 @@ func pushUserUpdate(app *pocketbase.PocketBase, deps *Deps, rec *core.Record) er
 	return nil
 }
 
-func refreshUserCreds(deps *Deps, rec *core.Record) error {
-	creds, err := deps.Client.DownloadCreds(rec.GetString("synadia_user_id"))
+// rotateUserKeys rotates the user's nkey/seed on Synadia and downloads the
+// resulting creds. The old creds are invalid the moment rotation succeeds —
+// we clear the cached creds_file before the download so a download failure
+// leaves the record honestly empty rather than holding a now-dead creds blob.
+func rotateUserKeys(deps *Deps, rec *core.Record) error {
+	result, err := deps.Client.RotateUser(rec.GetString("synadia_user_id"))
+	if err != nil {
+		markPending(rec, pbtypes.SyncStatePendingUpdate, err.Error())
+		return err
+	}
+	rec.Set("public_key", result.PublicKey)
+	rec.Set("jwt", result.JWT)
+	rec.Set("creds_file", "")
+
+	creds, err := deps.Client.DownloadCreds(result.ID)
 	if err != nil {
 		markPending(rec, pbtypes.SyncStatePendingUpdate, err.Error())
 		return err
 	}
 	rec.Set("creds_file", creds)
+	markSynced(rec)
+	deps.Logger.Success("user %s keys rotated on Synadia", rec.GetString("nats_username"))
 	return nil
 }
 

@@ -4,6 +4,8 @@ A Go library for extending [PocketBase](https://pocketbase.io/) to manage NATS a
 
 Sister library to [pb-nats](https://github.com/skeeeon/pb-nats), which manages a self-hosted NATS server instead. Same conceptual surface (accounts/users/roles/creds_file), different backend.
 
+> **Disclaimer:** This is an independent, community-maintained project. It is not affiliated with, endorsed by, or sponsored by Synadia Communications, Inc. "Synadia" and "Synadia Cloud" are trademarks of their respective owners and are used here only to describe interoperability.
+
 ## Status
 
 **v0.1** — first shippable version. Accounts, users, and roles work end-to-end against Synadia Cloud.
@@ -135,7 +137,7 @@ PB-side permission template. Synadia never sees it; pb-synadia merges role + use
 | `public_key`, `jwt`, `creds_file` | Text | cached from Synadia; `creds_file` is a complete `.creds` for client connection |
 | `bearer_token` | Bool | |
 | `active` | Bool | |
-| `regenerate` | Bool | trigger: re-download creds from Synadia on next save |
+| `regenerate` | Bool | trigger: rotate the user's nkey + seed on Synadia and download new creds on next save. **Destructive — invalidates any previously distributed `.creds` file.** Auto-reset to false. |
 | `publish_permissions` / `subscribe_permissions` / deny variants | JSON | per-user overrides, merged with role |
 | `sync_state`, `last_sync_error` | Select / Text | |
 
@@ -259,7 +261,7 @@ The conceptual surface (accounts/users/roles/creds_file) is the same — the con
 
 **`pending_create` rows piling up.** Synadia is unreachable or the API token is invalid. Check `last_sync_error` on the records. Once Synadia is reachable, re-save the records (or wait for v0.2's Reconcile).
 
-**User created in PB but no creds_file.** Synadia user creation succeeded but `DownloadNatsUserCreds` failed. The record is in `pending_update`. Re-save the user record (or set `regenerate: true` on it).
+**User created in PB but no creds_file.** Synadia user creation succeeded but `DownloadNatsUserCreds` failed. The record is in `pending_update`. Set `regenerate: true` to rotate the keys and fetch fresh creds (safe here — no creds were ever in circulation), or wait for v0.2's Reconcile to retry the download non-destructively.
 
 **Account exists in Synadia but PB doesn't know its id.** Either created outside pb-synadia, or a `pending_create` retry succeeded but the second PB save failed. v0.2's Reconcile stitches by name (`nats_username` for users, `name` for accounts).
 
